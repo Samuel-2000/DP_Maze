@@ -5,3 +5,6 @@ opencv-python
 stable_baselines3
 torch
 tqdm
+matplotlib
+pandas
+seaborn
