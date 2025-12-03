@@ -1,59 +1,40 @@
+# src/core/agent.py - SIMPLIFIED VERSION
 """
-Agent class for interacting with environment
+Agent class (Simplified)
 """
 
 import torch
+import torch.nn.functional as F
 import numpy as np
 from typing import Optional, Dict, Any
 from pathlib import Path
 
-from src.networks import (
-    LSTMPolicyNet, 
-    TransformerPolicyNet, 
-    MultiMemoryPolicyNet
-)
+from src.networks.lstm import LSTMPolicyNet
 
 
 class Agent:
     """Agent that interacts with environment using a policy network"""
     
     def __init__(self,
-                 network_type: str = 'lstm',
                  observation_size: int = 10,
                  action_size: int = 6,
                  hidden_size: int = 512,
-                 use_auxiliary: bool = False,
                  device: str = 'auto'):
         
         if device == 'auto':
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.device = torch.device(device)
         
-        # Create network
-        if network_type == 'transformer':
-            self.network = TransformerPolicyNet(
-                observation_size=observation_size,
-                action_size=action_size,
-                hidden_size=hidden_size,
-                use_auxiliary=use_auxiliary
-            )
-        elif network_type == 'multimemory':
-            self.network = MultiMemoryPolicyNet(
-                observation_size=observation_size,
-                action_size=action_size,
-                hidden_size=hidden_size,
-                use_auxiliary=use_auxiliary
-            )
-        else:  # lstm
-            self.network = LSTMPolicyNet(
-                observation_size=observation_size,
-                action_size=action_size,
-                hidden_size=hidden_size,
-                use_auxiliary=use_auxiliary
-            )
+        # Create network (matching original)
+        self.network = LSTMPolicyNet(
+            vocab_size=20,  # Matches original
+            embed_dim=768,  # Matches original
+            observation_size=observation_size,
+            hidden_size=hidden_size,
+            action_size=action_size
+        )
         
         self.network.to(self.device)
-        self.network_type = network_type
         
     def act(self, 
             observation: np.ndarray,
@@ -61,19 +42,19 @@ class Agent:
         """Select action based on observation"""
         with torch.set_grad_enabled(training):
             # Convert observation to LongTensor for embedding layer
-            obs_tensor = torch.from_numpy(observation).long().to(self.device)
+            obs_tensor = torch.from_numpy(observation).long().unsqueeze(0).unsqueeze(0)  # [1, 1, obs_dim]
+            obs_tensor = obs_tensor.to(self.device)
             
-            # Add batch and sequence dimensions
-            if len(obs_tensor.shape) == 1:
-                obs_tensor = obs_tensor.unsqueeze(0).unsqueeze(0)  # [1, 1, obs_dim]
+            # Get action logits
+            logits = self.network(obs_tensor)  # [1, 1, action_size]
             
-            # Get action probabilities
-            logits = self.network(obs_tensor)
+            # Remove sequence dimension
+            logits = logits.squeeze(1)  # [1, action_size]
             
             if training:
                 # Sample from distribution
-                probs = torch.softmax(logits, dim=-1)
-                action = torch.multinomial(probs.squeeze(), 1).item()
+                probs = F.softmax(logits, dim=-1)
+                action = torch.multinomial(probs, 1).item()
             else:
                 # Take greedy action
                 action = logits.argmax(dim=-1).item()
@@ -86,10 +67,18 @@ class Agent:
     
     def save(self, path: str):
         """Save agent to file"""
-        self.network.save(path)
+        torch.save({
+            'state_dict': self.network.state_dict(),
+            'config': {
+                'observation_size': self.network.observation_size,
+                'vocab_size': self.network.vocab_size,
+                'hidden_size': self.network.lstm.hidden_size,
+                'action_size': self.head.out_features
+            }
+        }, path)
     
     @classmethod
-    def load(cls, path: str, device: str = 'auto') -> 'Agent':
+    def load(cls, path: str, device: str = 'auto'):
         """Load agent from file"""
         if device == 'auto':
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
@@ -100,19 +89,14 @@ class Agent:
         
         # Create agent
         agent = cls(
-            network_type=config.get('type', 'lstm'),
             observation_size=config.get('observation_size', 10),
             action_size=config.get('action_size', 6),
             hidden_size=config.get('hidden_size', 512),
-            use_auxiliary=config.get('use_auxiliary', False),
             device=device
         )
         
         # Load weights
-        if 'state_dict' in checkpoint:
-            agent.network.load_state_dict(checkpoint['state_dict'])
-        elif 'agent_state' in checkpoint:
-            agent.network.load_state_dict(checkpoint['agent_state'])
+        agent.network.load_state_dict(checkpoint['state_dict'])
         
         return agent
     

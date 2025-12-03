@@ -1,15 +1,16 @@
+# src/networks/lstm.py - SIMPLIFIED VERSION
 """
-LSTM-based policy network
+LSTM-based policy network (Simplified to match original)
 """
 
 import torch
 import torch.nn as nn
+import torch.nn.functional as F
 from typing import Optional, Tuple
-from .base import BaseNetwork, EmbeddingLayer, MLPAggregator
 
 
-class LSTMPolicyNet(BaseNetwork):
-    """LSTM-based policy network"""
+class LSTMPolicyNet(nn.Module):
+    """LSTM-based policy network - Simplified version matching original"""
     
     def __init__(self,
                  vocab_size: int = 20,
@@ -17,22 +18,33 @@ class LSTMPolicyNet(BaseNetwork):
                  observation_size: int = 10,
                  hidden_size: int = 512,
                  action_size: int = 6,
-                 num_layers: int = 2,
-                 dropout: float = 0.1,
-                 use_auxiliary: bool = False):
+                 num_layers: int = 1,
+                 dropout: float = 0.1):
         
-        super().__init__(observation_size, action_size, hidden_size, use_auxiliary)
+        super().__init__()
         
-        self.embed_dim = embed_dim
-        self.num_layers = num_layers
+        self.observation_size = observation_size
+        self.vocab_size = vocab_size
         
-        # Embedding layer
-        self.embedding = EmbeddingLayer(vocab_size, embed_dim)
+        # Token embedding
+        self.embedding = nn.Embedding(
+            num_embeddings=vocab_size,
+            embedding_dim=embed_dim,
+            padding_idx=None,
+        )
         
-        # Aggregator: K tokens -> 1 vector
-        self.aggregator = MLPAggregator(
-            observation_size * embed_dim, 
-            hidden_size
+        # Learnable positional encodings for the K tokens inside an observation
+        self.pos_embed = nn.Parameter(torch.empty(observation_size, embed_dim))
+        nn.init.normal_(self.pos_embed, mean=0.0, std=embed_dim ** -0.5)
+        
+        # ConcatMLP-style aggregator (like original)
+        self.aggregator = nn.Sequential(
+            nn.Linear(embed_dim * observation_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU(),
+            nn.Linear(hidden_size, hidden_size),
+            nn.ReLU()
         )
         
         # LSTM memory
@@ -44,76 +56,52 @@ class LSTMPolicyNet(BaseNetwork):
             dropout=dropout if num_layers > 1 else 0.0
         )
         
-        # Policy head
-        self.policy_head = nn.Sequential(
-            nn.Linear(hidden_size, hidden_size // 2),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(hidden_size // 2, action_size)
-        )
+        # Policy head (logits)
+        self.head = nn.Linear(hidden_size, action_size)
         
-        # Auxiliary heads (optional)
-        if use_auxiliary:
-            self.energy_head = nn.Sequential(
-                nn.Linear(hidden_size, hidden_size // 4),
-                nn.ReLU(),
-                nn.Linear(hidden_size // 4, 1)
-            )
-            
-            self.observation_head = nn.Sequential(
-                nn.Linear(hidden_size, hidden_size // 2),
-                nn.ReLU(),
-                nn.Linear(hidden_size // 2, observation_size * vocab_size)
-            )
-        
-        # State
+        # Hidden state
         self.hidden_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
         
-    def forward(self, 
-                x: torch.Tensor,
-                return_auxiliary: bool = False) -> torch.Tensor:
-        """Forward pass"""
+    def reset_state(self):
+        """Reset LSTM hidden state"""
+        self.hidden_state = None
+    
+    def forward(self, x: torch.Tensor) -> torch.Tensor:
+        """
+        Parameters
+        ----------
+        x : LongTensor [batch, seq, K]
+        
+        Returns
+        -------
+        logits : Tensor [batch, seq, action_size]
+        """
         B, T, K = x.shape
         
-        # Ensure input is LongTensor for embedding layer
+        # Ensure input is LongTensor
         if x.dtype != torch.long:
             x = x.long()
         
-        # Embed and aggregate
-        embedded = self.embedding(x)  # [B, T, K, D]
-        aggregated = embedded.view(B, T, -1)  # [B, T, K*D]
-        aggregated = self.aggregator(aggregated)  # [B, T, H]
+        # Embed tokens: [B, T, K, D]
+        x_embed = self.embedding(x)
+        
+        # Add positional encoding
+        x_embed = x_embed + self.pos_embed  # broadcast (K, D) -> (B, T, K, D)
+        
+        # Flatten and aggregate: [B, T, K*D] -> [B, T, H]
+        x_flat = x_embed.view(B, T, -1)
+        aggregated = self.aggregator(x_flat)
         
         # LSTM over the temporal dimension
         if self.hidden_state is None:
-            # Initialize hidden state with current batch size
-            self.hidden_state = self._init_hidden(B, x.device)
-        elif self.hidden_state[0].size(1) != B:
-            # If batch size changed, reinitialize hidden state
-            self.hidden_state = self._init_hidden(B, x.device)
+            # Initialize hidden state
+            h0 = torch.zeros(self.lstm.num_layers, B, self.lstm.hidden_size, device=x.device)
+            c0 = torch.zeros_like(h0)
+            self.hidden_state = (h0, c0)
         
-        out, self.hidden_state = self.lstm(aggregated, self.hidden_state)  # out: [B, T, H]
-        return self.head(out)
-    
-    def reset_state(self, batch_size: int = 1):
-        """Reset LSTM hidden state"""
-        self.hidden_state = None
-        self._current_batch_size = batch_size  # Store the batch size
-
-    def _init_hidden(self, batch_size: int, device: torch.device) -> Tuple[torch.Tensor, torch.Tensor]:
-        """Initialize hidden state"""
-        # Use stored batch size or current batch size
-        batch_size = getattr(self, '_current_batch_size', batch_size)
-        h0 = torch.zeros(self.num_layers, batch_size, self.hidden_size, device=device)
-        c0 = torch.zeros_like(h0)
-        return h0, c0
-    
-    def _get_config(self):
-        """Get configuration for saving"""
-        config = super()._get_config()
-        config.update({
-            'vocab_size': self.embedding.embedding.num_embeddings,
-            'embed_dim': self.embed_dim,
-            'num_layers': self.num_layers,
-        })
-        return config
+        out, self.hidden_state = self.lstm(aggregated, self.hidden_state)
+        
+        # Get logits
+        logits = self.head(out)
+        
+        return logits

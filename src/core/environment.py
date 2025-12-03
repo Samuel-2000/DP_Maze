@@ -349,7 +349,7 @@ class GridMazeWorld(gym.Env):
             [action_scaled, energy_scaled]
         ])
         
-        return obs.astype(np.int32)  # Make sure it's int32
+        return obs.astype(np.int32)  # The network expects integer tokens
     
     def render(self) -> Optional[np.ndarray]:
         """Render current state"""

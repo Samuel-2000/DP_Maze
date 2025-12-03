@@ -223,30 +223,27 @@ class Trainer:
         observations = []
         actions = []
         rewards = []
-        energies = []
         
-        for _ in range(n_episodes):
-            # Reset environment and agent - get both observation and info
+        for ep in range(n_episodes):
+            # Reset environment and agent
             obs, info = self.env.reset()
-            self.agent.reset()
+            self.agent.reset()  # Reset LSTM hidden state
             
             episode_obs = []
             episode_actions = []
             episode_rewards = []
-            episode_energies = []
             
             terminated = truncated = False
             
             while not (terminated or truncated):
                 # Store observation
                 episode_obs.append(obs)
-                episode_energies.append(self.env.energy)
                 
                 # Select action
                 action = self.agent.act(obs, training=True)
                 episode_actions.append(action)
                 
-                # Take step (Gymnasium returns 5 values)
+                # Take step
                 obs, reward, terminated, truncated, info = self.env.step(action)
                 episode_rewards.append(reward)
             
@@ -254,7 +251,6 @@ class Trainer:
             observations.append(episode_obs)
             actions.append(episode_actions)
             rewards.append(episode_rewards)
-            energies.append(episode_energies)
         
         # Convert to tensors
         max_len = max(len(r) for r in rewards)
