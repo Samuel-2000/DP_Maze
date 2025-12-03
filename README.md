@@ -1,39 +1,53 @@
-# maze-rl
-Experiments with RL in 2D maze environments
-
-
-Advanced Memory Architectures:
-    TransformerMemory: Uses multi-head attention for long-term dependencies
-    NeuralCache: Content-addressable memory for storing important experiences
-    MultiMemoryPolicyNet: Combines LSTM, Transformer, and cache
-
-Auxiliary Tasks:
-    Energy prediction: Predict current energy level
-    Observation prediction: Predict next observation (self-supervised)
-
-Training Improvements:
-    Multiple network types via --network-type argument
-    Auxiliary losses for better representations
-    Better gradient clipping and optimization
-
-Experiment Framework:
-    Script to compare different architectures
-    Automatic logging and plotting
-
-
-
-
-# Train a model
-python run.py --mode train --network-type transformer --auxiliary-tasks
-
-# Test with visualization
-python run.py --mode test --model models/policy_transformer_epoch_010000.pt --visualize
-
-# Run benchmark on all models
-python run.py --mode benchmark
-
-# Compare different architectures
-python run.py --mode compare --train-epochs 2000
-
-# Run the complete pipeline
-python run.py --mode all
+maze_rl/
+├── README.md
+├── LICENSE
+├── requirements.txt
+├── setup.py
+├── run.py
+├── configs/
+│   ├── default.yaml
+│   ├── lstm.yaml
+│   ├── transformer.yaml
+│   └── multimemory.yaml
+├── src/
+│   ├── __init__.py
+│   ├── core/
+│   │   ├── __init__.py
+│   │   ├── environment.py
+│   │   ├── agent.py
+│   │   └── utils.py
+│   ├── networks/
+│   │   ├── __init__.py
+│   │   ├── base.py
+│   │   ├── lstm.py
+│   │   ├── transformer.py
+│   │   └── multimemory.py
+│   ├── training/
+│   │   ├── __init__.py
+│   │   ├── trainer.py
+│   │   ├── losses.py
+│   │   └── optimizers.py
+│   └── evaluation/
+│       ├── __init__.py
+│       ├── benchmark.py
+│       ├── visualization.py
+│       └── metrics.py
+├── experiments/
+│   ├── __init__.py
+│   ├── train.py
+│   ├── compare.py
+│   └── analyze.py
+├── scripts/
+│   ├── train_all.sh
+│   ├── benchmark.sh
+│   └── visualize_results.py
+├── models/
+├── logs/
+├── results/
+│   ├── benchmarks/
+│   ├── plots/
+│   └── videos/
+└── tests/
+    ├── test_environment.py
+    ├── test_networks.py
+    └── test_training.py
