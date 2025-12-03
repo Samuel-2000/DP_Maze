@@ -10,6 +10,7 @@ from memory_maze import GridMazeWorld
 from torch import nn
 import math
 
+
 # Import advanced memory modules
 try:
     from .advanced_memory import TransformerMemory, NeuralCache, PositionalEncoding
@@ -523,6 +524,7 @@ def train_with_auxiliary_losses(
 
 
 def main():
+    import numpy as np
     args = parse_args()
     
     # Add training hyperparameters to args
@@ -550,7 +552,7 @@ def main():
 
     observation_size = 10
     vocab_size = 20
-    action_count = 6  # Updated to match Actions enum (6 actions)
+    action_count = 6  # Updated to match Actions enum
 
     # Create network
     net = create_network(args, vocab_size, observation_size, action_count)
@@ -569,8 +571,40 @@ def main():
     os.makedirs('models', exist_ok=True)
 
     t0 = time()
+    
+    # Create outer progress bar for epochs (position 0, stays at top)
+    outer_pbar = tqdm(
+        total=args.max_epoch, 
+        desc="🧠 Training Progress", 
+        position=0, 
+        leave=True,
+        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{elapsed}<{remaining}, {rate_fmt}{postfix}]'
+    )
+    
+    # Create inner progress bar for current interval (position 1, updates every iteration)
+    inner_pbar = tqdm(
+        total=args.save_interval,
+        desc=f"📊 Epoch {0:06d}",
+        position=1,
+        leave=False,
+        bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{postfix}]'
+    )
+    
+    # Statistics tracking
+    reward_history = []
+    loss_history = []
+    policy_loss_history = []
+    entropy_loss_history = []
+    speed_history = []
+    
+    # Best model tracking
+    best_reward = -float('inf')
+    best_epoch = 0
+    
+    # Training loop
     for epoch in range(args.max_epoch):
         t1 = time()
+        
         with torch.no_grad():
             # Reset environments
             observations = [env.reset()[0] for env in environments]
@@ -652,28 +686,196 @@ def main():
         # Compute statistics
         average_rewards = episode_rewards.sum(1).mean().item()
         alive_lengths = (episode_rewards > 0).sum(1).float().mean().item()
+        epoch_time = time() - t1
+        epoch_speed = 1.0 / epoch_time if epoch_time > 0 else 0
         
-        # Print progress
-        metrics_str = " ".join([f"{k}: {v:.4f}" for k, v in metrics.items()])
-        print(f"Epoch: {epoch}, "
-              f"Avg reward: {average_rewards:.2f}, "
-              f"Live steps: {alive_lengths:.1f}, "
-              f"{metrics_str}, "
-              f"Time: {time() - t1:.2f}s, "
-              f"Speed: {epoch / (time() - t0):.2f} ep/s")
-
-        if epoch % args.save_interval == 0:
+        # Store history
+        reward_history.append(average_rewards)
+        loss_history.append(metrics['total_loss'])
+        policy_loss_history.append(metrics['policy_loss'])
+        entropy_loss_history.append(metrics['entropy_loss'])
+        speed_history.append(epoch_speed)
+        
+        # Keep only recent history (last 100 epochs)
+        window_size = 100
+        if len(reward_history) > window_size:
+            reward_history = reward_history[-window_size:]
+            loss_history = loss_history[-window_size:]
+            policy_loss_history = policy_loss_history[-window_size:]
+            entropy_loss_history = entropy_loss_history[-window_size:]
+            speed_history = speed_history[-window_size:]
+        
+        # Update inner progress bar (every iteration)
+        inner_pbar.update(1)
+        
+        # Prepare inner bar postfix with current stats
+        inner_postfix = {
+            'R': f"{average_rewards:6.2f}",
+            'L': f"{alive_lengths:5.1f}",
+            'loss': f"{metrics['total_loss']:7.4f}",
+            'P': f"{metrics['policy_loss']:7.4f}",
+            'E': f"{metrics['entropy_loss']:7.4f}",
+        }
+        
+        # Add auxiliary losses if using them
+        if args.auxiliary_tasks and hasattr(net, 'use_auxiliary') and net.use_auxiliary:
+            if 'energy_loss' in metrics:
+                inner_postfix['Ener'] = f"{metrics['energy_loss']:7.4f}"
+            if 'obs_loss' in metrics:
+                inner_postfix['Obs'] = f"{metrics['obs_loss']:7.4f}"
+        
+        inner_pbar.set_postfix(inner_postfix)
+        
+        # Update outer progress bar description and postfix (every 10 epochs)
+        if epoch % 10 == 0:
+            # Calculate rolling averages
+            window = min(10, len(reward_history))
+            avg_reward_window = np.mean(reward_history[-window:]) if reward_history else 0
+            avg_loss_window = np.mean(loss_history[-window:]) if loss_history else 0
+            avg_speed = np.mean(speed_history[-window:]) if speed_history else 0
+            
+            outer_postfix = {
+                'avg_R': f"{avg_reward_window:6.2f}",
+                'avg_loss': f"{avg_loss_window:7.4f}",
+                'speed': f"{avg_speed:5.1f} ep/s",
+                'best_R': f"{best_reward:6.2f}@{best_epoch}"
+            }
+            
+            outer_pbar.set_postfix(outer_postfix)
+        
+        # Update outer bar
+        outer_pbar.update(1)
+        
+        # Check for best model
+        if average_rewards > best_reward:
+            best_reward = average_rewards
+            best_epoch = epoch
+            
+            # Save best model
+            best_model_path = f"models/policy_{args.network_type}_best.pt"
+            torch.save(net.state_dict(), best_model_path)
+            
+            # Update inner bar with star indicator
+            inner_pbar.set_description(f"📊 Epoch {epoch:06d} ★")
+        
+        # Save model at intervals
+        if (epoch + 1) % args.save_interval == 0 or epoch == args.max_epoch - 1:
             model_path = f"models/policy_{args.network_type}_epoch_{epoch:06d}.pt"
             torch.save(net.state_dict(), model_path)
-            print(f"Model saved to {model_path}")
+            
+            # Calculate interval statistics
+            interval_start = max(0, epoch - args.save_interval + 1)
+            interval_end = epoch + 1
+            
+            # Get metrics for this interval
+            interval_rewards = reward_history[-args.save_interval:] if len(reward_history) >= args.save_interval else reward_history
+            interval_losses = loss_history[-args.save_interval:] if len(loss_history) >= args.save_interval else loss_history
+            
+            avg_interval_reward = np.mean(interval_rewards) if interval_rewards else 0
+            std_interval_reward = np.std(interval_rewards) if interval_rewards else 0
+            avg_interval_loss = np.mean(interval_losses) if interval_losses else 0
+            
+            # Write interval summary to console (above progress bars)
+            outer_pbar.write("─" * 80)
+            outer_pbar.write(f"💾 SAVED: {model_path}")
+            outer_pbar.write(f"   Interval [{interval_start:06d}-{interval_end:06d}] stats:")
+            outer_pbar.write(f"   • Reward: {avg_interval_reward:6.2f} ± {std_interval_reward:5.2f}")
+            outer_pbar.write(f"   • Loss:   {avg_interval_loss:7.4f}")
+            outer_pbar.write(f"   • Current: R={average_rewards:6.2f}, L={alive_lengths:5.1f}, loss={metrics['total_loss']:7.4f}")
+            
+            # Reset inner progress bar for next interval
+            inner_pbar.close()
+            inner_pbar = tqdm(
+                total=args.save_interval,
+                desc=f"📊 Epoch {epoch+1:06d}",
+                position=1,
+                leave=False,
+                bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{postfix}]'
+            )
+        
+        # Early stopping check (optional)
+        if len(reward_history) >= 100:
+            # Check if no improvement in last 100 epochs
+            recent_rewards = reward_history[-100:]
+            if max(recent_rewards) == recent_rewards[0]:
+                outer_pbar.write("⚠️  Early stopping: No improvement in last 100 epochs")
+                break
+    
+    # Close progress bars
+    inner_pbar.close()
+    outer_pbar.close()
+    
+    # Print final training summary
+    total_time = time() - t0
+    avg_speed = args.max_epoch / total_time if total_time > 0 else 0
+    
+    print(f"\n{'='*80}")
+    print(f"🎉 TRAINING COMPLETE")
+    print(f"{'='*80}")
+    print(f"Total epochs:          {args.max_epoch:,}")
+    print(f"Total time:            {total_time:.1f}s ({total_time/60:.1f}m)")
+    print(f"Average speed:         {avg_speed:.1f} ep/s")
+    print(f"Final reward:          {reward_history[-1] if reward_history else 0:.2f}")
+    print(f"Final loss:            {loss_history[-1] if loss_history else 0:.4f}")
+    print(f"Best reward:           {best_reward:.2f} (epoch {best_epoch})")
+    print(f"Average reward:        {np.mean(reward_history) if reward_history else 0:.2f}")
+    print(f"Average loss:          {np.mean(loss_history) if loss_history else 0:.4f}")
+    print(f"\n📁 Model files saved to: models/")
+    print(f"   • Best model:        policy_{args.network_type}_best.pt")
+    print(f"   • Final model:       policy_{args.network_type}_final.pt")
+    print(f"   • Checkpoints:       policy_{args.network_type}_epoch_*.pt")
+    print(f"{'='*80}")
+    
+    # Save final model
+    final_model_path = f"models/policy_{args.network_type}_final.pt"
+    torch.save(net.state_dict(), final_model_path)
+    
+    # Save training statistics
+    if reward_history:
+        stats = {
+            'epochs': list(range(len(reward_history))),
+            'rewards': reward_history,
+            'losses': loss_history,
+            'policy_losses': policy_loss_history,
+            'entropy_losses': entropy_loss_history,
+            'speeds': speed_history,
+            'best_epoch': best_epoch,
+            'best_reward': best_reward,
+            'total_time': total_time,
+            'network_type': args.network_type,
+            'batch_size': args.batch_size,
+            'learning_rate': args.learning_rate,
+            'max_age': args.max_age
+        }
+        
+        # Save as numpy file
+        import numpy as np
+        stats_path = f"experiments/stats_{args.network_type}_{int(time())}.npz"
+        os.makedirs('experiments', exist_ok=True)
+        np.savez(stats_path, **stats)
+        print(f"📊 Training statistics saved to: {stats_path}")
 
 
 def get_episodes(args, device, environments, observations, net, show=False):
     """Collect episodes, optionally returning energies for auxiliary tasks"""
+    import numpy as np
     episode_rewards = []
     episode_observations = []
     episode_actions = []
     episode_energies = []  # For auxiliary tasks
+    
+    
+    # Create progress bar for episode steps if not in show mode
+    if not show and args.max_age > 50:
+        step_pbar = tqdm(
+            total=args.max_age,
+            desc="🎮 Episode Steps",
+            position=2,
+            leave=False,
+            bar_format='{desc}: {percentage:3.0f}%|{bar}| {n_fmt}/{total_fmt} [{postfix}]'
+        )
+    else:
+        step_pbar = None
     
     for i in range(args.max_age):
         episode_observations.append(observations)
@@ -709,7 +911,16 @@ def get_episodes(args, device, environments, observations, net, show=False):
         observations = torch.tensor(observations_list, dtype=torch.long)
         observations = observations.unsqueeze(1).to(device)
 
+        # Update step progress bar
+        if step_pbar:
+            avg_reward = np.mean(rewards)
+            step_pbar.update(1)
+            step_pbar.set_postfix({'avg_R': f"{avg_reward:.2f}"})
+        
         if all(dones):
+            if step_pbar:
+                step_pbar.n = step_pbar.total  # Complete the bar
+                step_pbar.refresh()
             break
     
     if show:
@@ -717,6 +928,10 @@ def get_episodes(args, device, environments, observations, net, show=False):
             image = last_image if i % 2 == 0 else last_image * 0
             cv2.imshow(env.name, image)
             cv2.waitKey(20)
+    
+    # Close step progress bar
+    if step_pbar:
+        step_pbar.close()
     
     return episode_actions, episode_observations, episode_rewards, episode_energies
 
