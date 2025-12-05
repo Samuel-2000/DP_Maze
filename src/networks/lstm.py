@@ -1,6 +1,6 @@
-# src/networks/lstm.py - SIMPLIFIED VERSION
+# src/networks/lstm.py - FIXED VERSION
 """
-LSTM-based policy network (Simplified to match original)
+LSTM-based policy network (Simplified to match original) - FIXED
 """
 
 import torch
@@ -59,12 +59,14 @@ class LSTMPolicyNet(nn.Module):
         # Policy head (logits)
         self.head = nn.Linear(hidden_size, action_size)
         
-        # Hidden state
+        # Hidden state - store as None initially
         self.hidden_state: Optional[Tuple[torch.Tensor, torch.Tensor]] = None
+        self.current_batch_size: Optional[int] = None
         
     def reset_state(self):
         """Reset LSTM hidden state"""
         self.hidden_state = None
+        self.current_batch_size = None
     
     def forward(self, x: torch.Tensor) -> torch.Tensor:
         """
@@ -93,11 +95,12 @@ class LSTMPolicyNet(nn.Module):
         aggregated = self.aggregator(x_flat)
         
         # LSTM over the temporal dimension
-        if self.hidden_state is None:
-            # Initialize hidden state
+        if self.hidden_state is None or self.current_batch_size != B:
+            # Initialize hidden state with correct batch size
             h0 = torch.zeros(self.lstm.num_layers, B, self.lstm.hidden_size, device=x.device)
-            c0 = torch.zeros_like(h0)
+            c0 = torch.zeros(self.lstm.num_layers, B, self.lstm.hidden_size, device=x.device)
             self.hidden_state = (h0, c0)
+            self.current_batch_size = B
         
         out, self.hidden_state = self.lstm(aggregated, self.hidden_state)
         

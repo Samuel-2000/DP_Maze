@@ -1,6 +1,6 @@
-# src/core/agent.py - SIMPLIFIED VERSION
+# src/core/agent.py - UPDATED VERSION
 """
-Agent class (Simplified)
+Agent class (Updated to support multiple network types)
 """
 
 import torch
@@ -9,30 +9,64 @@ import numpy as np
 from typing import Optional, Dict, Any
 from pathlib import Path
 
+# Import network types
 from src.networks.lstm import LSTMPolicyNet
+from src.networks.transformer import TransformerPolicyNet
+from src.networks.multimemory import MultiMemoryPolicyNet
 
 
 class Agent:
     """Agent that interacts with environment using a policy network"""
     
     def __init__(self,
+                 network_type: str = 'lstm',
                  observation_size: int = 10,
                  action_size: int = 6,
                  hidden_size: int = 512,
+                 use_auxiliary: bool = False,
                  device: str = 'auto'):
         
         if device == 'auto':
             device = 'cuda' if torch.cuda.is_available() else 'cpu'
         self.device = torch.device(device)
+        self.network_type = network_type
+        self.use_auxiliary = use_auxiliary
         
-        # Create network (matching original)
-        self.network = LSTMPolicyNet(
-            vocab_size=20,  # Matches original
-            embed_dim=768,  # Matches original
-            observation_size=observation_size,
-            hidden_size=hidden_size,
-            action_size=action_size
-        )
+        # Create network based on type
+        if network_type == 'lstm':
+            self.network = LSTMPolicyNet(
+                vocab_size=20,  # Matches original
+                embed_dim=hidden_size,
+                observation_size=observation_size,
+                hidden_size=hidden_size,
+                action_size=action_size
+            )
+        elif network_type == 'transformer':
+            self.network = TransformerPolicyNet(
+                vocab_size=20,
+                embed_dim=hidden_size,
+                observation_size=observation_size,
+                hidden_size=hidden_size,
+                action_size=action_size,
+                num_heads=8,
+                num_layers=3,
+                memory_size=10,
+                use_auxiliary=use_auxiliary
+            )
+        elif network_type == 'multimemory':
+            self.network = MultiMemoryPolicyNet(
+                vocab_size=20,
+                embed_dim=hidden_size,
+                observation_size=observation_size,
+                hidden_size=hidden_size,
+                action_size=action_size,
+                transformer_heads=8,
+                transformer_layers=3,
+                cache_size=50,
+                use_auxiliary=use_auxiliary
+            )
+        else:
+            raise ValueError(f"Unknown network type: {network_type}")
         
         self.network.to(self.device)
         
@@ -46,7 +80,15 @@ class Agent:
             obs_tensor = obs_tensor.to(self.device)
             
             # Get action logits
-            logits = self.network(obs_tensor)  # [1, 1, action_size]
+            if self.use_auxiliary and hasattr(self.network, 'forward'):
+                # For auxiliary tasks, we need to handle the extra outputs
+                outputs = self.network(obs_tensor, return_auxiliary=False)
+                if isinstance(outputs, tuple):
+                    logits = outputs[0]  # First element is logits
+                else:
+                    logits = outputs
+            else:
+                logits = self.network(obs_tensor)
             
             # Remove sequence dimension
             logits = logits.squeeze(1)  # [1, action_size]
@@ -63,17 +105,19 @@ class Agent:
     
     def reset(self):
         """Reset agent state"""
-        self.network.reset_state()
+        if hasattr(self.network, 'reset_state'):
+            self.network.reset_state()
     
     def save(self, path: str):
         """Save agent to file"""
         torch.save({
             'state_dict': self.network.state_dict(),
             'config': {
+                'network_type': self.network_type,
                 'observation_size': self.network.observation_size,
-                'vocab_size': self.network.vocab_size,
-                'hidden_size': self.network.lstm.hidden_size,
-                'action_size': self.head.out_features
+                'hidden_size': self.network.hidden_size,
+                'action_size': 6,  # Fixed action size for maze
+                'use_auxiliary': self.use_auxiliary
             }
         }, path)
     
@@ -87,11 +131,16 @@ class Agent:
         checkpoint = torch.load(path, map_location=device)
         config = checkpoint.get('config', {})
         
+        # Get network type, default to 'lstm' for backward compatibility
+        network_type = config.get('network_type', 'lstm')
+        
         # Create agent
         agent = cls(
+            network_type=network_type,
             observation_size=config.get('observation_size', 10),
             action_size=config.get('action_size', 6),
             hidden_size=config.get('hidden_size', 512),
+            use_auxiliary=config.get('use_auxiliary', False),
             device=device
         )
         
@@ -117,28 +166,28 @@ class Agent:
             video_writer = None
         
         for episode in range(episodes):
-            obs = env.reset()
+            obs, info = env.reset()
             self.reset()
             
             episode_reward = 0
             steps = 0
-            done = False
+            terminated = truncated = False
             
             frames = []
             
-            while not done and steps < env.max_steps:
+            while not (terminated or truncated) and steps < env.max_steps:
                 # Get action
                 action = self.act(obs, training=False)
                 
                 # Take step
-                obs, reward, done, _ = env.step(action)
+                obs, reward, terminated, truncated, info = env.step(action)
                 
                 episode_reward += reward
                 steps += 1
                 
                 # Record frame if needed
                 if visualize or save_video:
-                    frame = env.render(mode='rgb_array')
+                    frame = env.render()
                     if save_video:
                         frames.append(frame)
                     if visualize:

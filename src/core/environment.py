@@ -1,14 +1,13 @@
-# src/core/environment.py
+# src/core/environment.py - FIXED VERSION
 """
 Optimized Maze Environment using Gymnasium
 """
 
 import numpy as np
 import cv2
-import gymnasium as gym  # Changed from gym to gymnasium
+import gymnasium as gym
 from gymnasium import spaces
 from numba import jit
-import numba
 from typing import Tuple, Dict, Any, Optional
 import enum
 
@@ -163,8 +162,9 @@ class GridMazeWorld(gym.Env):
         
         # Define action and observation spaces
         self.action_space = spaces.Discrete(len(Actions))
+        # FIXED: Observation space should be integers for token embedding
         self.observation_space = spaces.Box(
-            low=0, high=1, shape=(10,), dtype=np.float32
+            low=0, high=19, shape=(10,), dtype=np.int32
         )
         
         # Initialize state
@@ -307,11 +307,11 @@ class GridMazeWorld(gym.Env):
         return reward
     
     def _get_observation(self) -> np.ndarray:
-        """Get current observation"""
+        """Get current observation - returns integer tokens for embedding layer"""
         y, x = self.agent_pos
         
         # Get 3x3 neighborhood (excluding center)
-        obs = np.zeros(8, dtype=np.int32)  # Change from float32 to int32
+        obs = np.zeros(8, dtype=np.int32)
         idx = 0
         for dy in [-1, 0, 1]:
             for dx in [-1, 0, 1]:
@@ -327,29 +327,25 @@ class GridMazeWorld(gym.Env):
                             cell_type = TileType.FOOD.value
                             break
                     
-                    obs[idx] = cell_type  # Don't divide by 4.0 - keep as integer
+                    obs[idx] = cell_type
                 else:
-                    obs[idx] = TileType.OBSTACLE.value  # Don't divide by 4.0
+                    obs[idx] = TileType.OBSTACLE.value
                 idx += 1
         
-        # Add last action and normalized energy - convert to integer range
-        # Assuming vocab_size=20, scale to 0-19
-        energy_scaled = int(self.energy / 100.0 * 19)  # Scale 0-100 energy to 0-19
-        energy_scaled = max(0, min(19, energy_scaled))  # Clamp to range
+        # Scale energy to 0-19 range (for vocab_size=20)
+        energy_scaled = int((self.energy / 100.0) * 7) + 12  # Map to 12-19 range
+        energy_scaled = max(12, min(19, energy_scaled))
         
-        # Actions are already 0-5, scale if needed
-        action_scaled = self.last_action  # Assuming actions are 0-5
-        
-        # If your vocab_size expects different ranges, adjust accordingly
-        # For example, if you need 0-19 for all observations:
-        action_scaled = int(self.last_action / 5.0 * 19)  # Scale 0-5 to 0-19
+        # Actions are 0-5, map to 6-11 range
+        action_scaled = self.last_action + 6  # Map to 6-11 range
         
         obs = np.concatenate([
-            obs,
-            [action_scaled, energy_scaled]
+            obs,  # First 8: neighbor tiles (0-4)
+            [action_scaled],  # Last action (6-11)
+            [energy_scaled]   # Energy level (12-19)
         ])
         
-        return obs.astype(np.int32)  # The network expects integer tokens
+        return obs.astype(np.int32)
     
     def render(self) -> Optional[np.ndarray]:
         """Render current state"""

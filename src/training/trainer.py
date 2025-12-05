@@ -1,3 +1,4 @@
+# src/training/trainer.py - UPDATED VERSION (fixing network creation)
 """
 Training module with optimizations
 """
@@ -48,12 +49,34 @@ class Trainer:
         
         # Setup training components
         self.optimizer = self._create_optimizer()
-        self.loss_fn = PolicyLoss()
-        self.aux_loss_fn = AuxiliaryLoss() if config['training'].get('use_auxiliary', False) else None
-        self.gradient_clipper = GradientClipper(max_norm=1.0)
+        
+        # Get training config
+        training_config = self.config['training']
+        
+        # Create loss functions
+        self.policy_loss_fn = PolicyLoss(
+            gamma=training_config.get('gamma', 0.97),
+            entropy_coef=training_config.get('entropy_coef', 0.01),
+            normalize_advantages=True
+        )
+        
+        # Only create auxiliary loss if configured
+        if self.agent.use_auxiliary:
+            self.aux_loss_fn = AuxiliaryLoss(
+                energy_coef=0.1,
+                obs_coef=0.05,
+                obs_prediction_type='classification'
+            )
+        else:
+            self.aux_loss_fn = None
+            
+        self.gradient_clipper = GradientClipper(
+            max_norm=training_config.get('max_grad_norm', 1.0)
+        )
         self.lr_scheduler = LearningRateScheduler(
             self.optimizer,
             mode='cosine',
+            lr_start=training_config.get('learning_rate', 0.0005),
             lr_min=1e-6
         )
         
@@ -88,9 +111,10 @@ class Trainer:
     def _create_agent(self) -> Agent:
         """Create agent with specified network"""
         model_config = self.config['model']
+        
         agent = Agent(
             network_type=model_config['type'],
-            observation_size=self.env.observation_space.shape[0],
+            observation_size=10,  # Fixed observation size
             action_size=self.env.action_space.n,
             hidden_size=model_config.get('hidden_size', 512),
             use_auxiliary=model_config.get('use_auxiliary', False),
@@ -218,26 +242,35 @@ class Trainer:
         
         return metrics
     
+
     def _collect_experiences(self, n_episodes: int) -> Dict[str, torch.Tensor]:
         """Collect experiences by running episodes"""
         observations = []
         actions = []
         rewards = []
+        energies = []  # For auxiliary tasks
         
         for ep in range(n_episodes):
             # Reset environment and agent
             obs, info = self.env.reset()
-            self.agent.reset()  # Reset LSTM hidden state
+            self.agent.reset()  # Reset network state - IMPORTANT!
             
             episode_obs = []
             episode_actions = []
             episode_rewards = []
+            episode_energies = []
             
             terminated = truncated = False
             
             while not (terminated or truncated):
                 # Store observation
-                episode_obs.append(obs)
+                episode_obs.append(obs.copy())
+                
+                # Get energy from observation (last element, scaled back to 0-100)
+                energy_token = obs[-1]  # Value between 12-19
+                # Convert token back to energy value (approx)
+                energy_value = ((energy_token - 12) / 7.0) * 100.0
+                episode_energies.append(energy_value)
                 
                 # Select action
                 action = self.agent.act(obs, training=True)
@@ -251,50 +284,46 @@ class Trainer:
             observations.append(episode_obs)
             actions.append(episode_actions)
             rewards.append(episode_rewards)
+            energies.append(episode_energies)
         
-        # Convert to tensors
+        # Reset the agent network for batch processing
+        self.agent.reset()  # Reset before batch forward pass
+        
+        # Pad sequences
         max_len = max(len(r) for r in rewards)
         
-        def pad_sequence(seq, max_len, pad_value=0):
+        def pad_sequence(seq, max_len, pad_value=0, is_observation=False):
             """Pad a list of sequences to the same length"""
             padded = []
             for s in seq:
                 pad_len = max_len - len(s)
-                # If s is already a numpy array or list, extend it
-                if isinstance(s, (list, np.ndarray)):
-                    if pad_len > 0:
-                        # Create padding array with same dtype/shape as first element
-                        if isinstance(s[0], (list, np.ndarray)):
-                            # For nested sequences
-                            pad_shape = (pad_len,) + np.array(s[0]).shape
-                            padding = np.full(pad_shape, pad_value, dtype=np.float32)
-                            padded_s = np.concatenate([np.array(s), padding], axis=0)
-                        else:
-                            # For flat sequences
-                            padding = [pad_value] * pad_len
-                            padded_s = s + padding
+                if pad_len > 0:
+                    if is_observation:
+                        # For observations (nested lists)
+                        pad_shape = (pad_len,) + np.array(s[0]).shape
+                        padding = np.full(pad_shape, pad_value, dtype=np.int32)
+                        padded_s = np.concatenate([np.array(s), padding], axis=0)
                     else:
-                        padded_s = s
+                        # For actions, rewards, energies (flat lists)
+                        padding = [pad_value] * pad_len
+                        padded_s = np.array(s + padding)
                 else:
-                    # Handle simple scalar sequences
-                    padding = [pad_value] * pad_len
-                    padded_s = s + padding
-                
+                    padded_s = np.array(s)
                 padded.append(padded_s)
             
-            # Convert to tensor
-            return torch.tensor(np.array(padded), dtype=torch.float32)
+            return np.array(padded)
         
-        obs_tensor = pad_sequence(observations, max_len)
-        act_tensor = pad_sequence(actions, max_len, pad_value=0).long()
-        rew_tensor = pad_sequence(rewards, max_len)
-        energy_tensor = pad_sequence(energies, max_len)
+        # Pad sequences
+        obs_padded = pad_sequence(observations, max_len, pad_value=0, is_observation=True)
+        act_padded = pad_sequence(actions, max_len, pad_value=0)
+        rew_padded = pad_sequence(rewards, max_len, pad_value=0.0)
+        energy_padded = pad_sequence(energies, max_len, pad_value=0.0)
         
         return {
-            'observations': obs_tensor.to(self.device),
-            'actions': act_tensor.to(self.device),
-            'rewards': rew_tensor.to(self.device),
-            'energies': energy_tensor.to(self.device)
+            'observations': torch.tensor(obs_padded, dtype=torch.long).to(self.device),
+            'actions': torch.tensor(act_padded, dtype=torch.long).to(self.device),
+            'rewards': torch.tensor(rew_padded, dtype=torch.float32).to(self.device),
+            'energies': torch.tensor(energy_padded, dtype=torch.float32).to(self.device)
         }
     
     def _compute_loss(self, 
@@ -305,43 +334,54 @@ class Trainer:
         rewards = experiences['rewards']
         energies = experiences.get('energies', None)
         
+        # Create mask for valid steps (where rewards are non-zero)
+        mask = (rewards != 0).float()
+        
         # Forward pass
         if self.aux_loss_fn and energies is not None:
+            # Get outputs from network with auxiliary predictions
             outputs = self.agent.network(obs, return_auxiliary=True)
             
-            if len(outputs) == 4:
-                logits, energy_pred, obs_pred, _ = outputs
+            if isinstance(outputs, tuple):
+                if len(outputs) == 4:
+                    logits, energy_pred, obs_pred, _ = outputs
+                else:
+                    logits, energy_pred, obs_pred = outputs
             else:
-                logits, energy_pred, obs_pred = outputs
+                # Network doesn't return auxiliary outputs
+                logits = outputs
+                energy_pred = None
+                obs_pred = None
             
             # Policy loss
-            policy_loss, entropy = self.loss_fn(
-                logits, actions, rewards, 
-                gamma=self.config['training'].get('gamma', 0.97)
+            policy_loss, entropy = self.policy_loss_fn(
+                logits, actions.unsqueeze(-1), rewards, mask
             )
             
-            # Auxiliary losses
-            aux_loss = self.aux_loss_fn(
-                energy_pred, energies,
-                obs_pred, obs[:, 1:] if obs.shape[1] > 1 else obs
-            )
-            
-            # Total loss
-            total_loss = policy_loss + aux_loss
+            total_loss = policy_loss
             
             metrics = {
-                'loss': total_loss.item(),
+                'loss': policy_loss.item(),
                 'policy_loss': policy_loss.item(),
-                'aux_loss': aux_loss.item(),
                 'entropy': entropy.item(),
                 'reward': rewards.sum(dim=1).mean().item()
             }
             
+            # Add auxiliary loss if available
+            if energy_pred is not None and obs_pred is not None:
+                aux_loss = self.aux_loss_fn(
+                    energy_pred, energies,
+                    obs_pred, obs, mask
+                )
+                total_loss = total_loss + aux_loss
+                metrics['aux_loss'] = aux_loss.item()
+                metrics['loss'] = total_loss.item()
+            
         else:
+            # Standard forward pass without auxiliary tasks
             logits = self.agent.network(obs)
-            policy_loss, entropy = self.loss_fn(
-                logits, actions, rewards,
-                gamma=self.config['training'].get('gamma', 0.97)
+            policy_loss, entropy = self.policy_loss_fn(
+                logits, actions.unsqueeze(-1), rewards, mask
             )
             
             total_loss = policy_loss
@@ -365,18 +405,16 @@ class Trainer:
         
         with torch.no_grad():
             for _ in range(episodes):
-                obs = self.env.reset()
+                obs, info = self.env.reset()
                 self.agent.reset()
                 
                 episode_reward = 0.0
                 steps = 0
-                done = False
+                terminated = truncated = False
                 
-                while not done and steps < self.env.max_steps:
+                while not (terminated or truncated) and steps < self.env.max_steps:
                     action = self.agent.act(obs, training=False)
-                    obs, reward, done, _ = self.env.step(action)
-                    #obs, reward, terminated, truncated, _ = self.env.step(action)
-                    #done = terminated or truncated
+                    obs, reward, terminated, truncated, info = self.env.step(action)
                     
                     episode_reward += reward
                     steps += 1
@@ -405,7 +443,7 @@ class Trainer:
         
         # Save agent
         agent_path = save_dir / f"{self.experiment_name}_{name}.pt"
-        self.agent.save(agent_path)
+        self.agent.save(str(agent_path))
         
         # Save optimizer and scheduler
         checkpoint_path = save_dir / f"{self.experiment_name}_{name}_checkpoint.pt"
@@ -416,7 +454,7 @@ class Trainer:
             'scheduler_state': self.lr_scheduler.state_dict(),
             'metrics': self.metrics,
             'config': self.config
-        }, checkpoint_path)
+        }, str(checkpoint_path))
         
         self.logger.info(f"Saved model to {agent_path}")
     
@@ -426,7 +464,7 @@ class Trainer:
         metrics_dir.mkdir(exist_ok=True)
         
         metrics_path = metrics_dir / f"{self.experiment_name}_metrics.npz"
-        np.savez(metrics_path, **self.metrics)
+        np.savez(str(metrics_path), **self.metrics)
         
         # Plot metrics
         self._plot_metrics()
@@ -475,7 +513,7 @@ class Trainer:
         
         plt.tight_layout()
         plot_path = Path('results/plots') / f"{self.experiment_name}_metrics.png"
-        plt.savefig(plot_path, dpi=150, bbox_inches='tight')
+        plt.savefig(str(plot_path), dpi=150, bbox_inches='tight')
         plt.close()
         
         self.logger.info(f"Saved metrics plot to {plot_path}")
