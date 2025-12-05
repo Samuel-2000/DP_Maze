@@ -41,7 +41,7 @@ class BaseNetwork(nn.Module, abc.ABC):
         """Save model"""
         torch.save({
             'state_dict': self.state_dict(),
-            'config': self._get_config(),
+            'config': self.get_config(),
         }, path)
     
     @classmethod
@@ -60,7 +60,7 @@ class BaseNetwork(nn.Module, abc.ABC):
         
         return instance
     
-    def _get_config(self) -> Dict[str, Any]:
+    def get_config(self) -> Dict[str, Any]:
         """Get network configuration"""
         return {
             'observation_size': self.observation_size,

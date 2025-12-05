@@ -116,7 +116,7 @@ class TransformerPolicyNet(BaseNetwork):
         """Reset memory (not needed for stateless transformer)"""
         pass
     
-    def _get_config(self):
+    def get_config(self):
         """Get configuration for saving"""
         config = super()._get_config()
         config.update({

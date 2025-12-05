@@ -110,17 +110,31 @@ class Agent:
     
     def save(self, path: str):
         """Save agent to file"""
+        # Get configuration from network
+        config = {
+            'network_type': self.network_type,
+            'use_auxiliary': self.use_auxiliary,
+        }
+        
+        # Get network-specific config
+        if hasattr(self.network, 'get_config'):
+            config.update(self.network.get_config())
+        else:
+            # Fallback to default values
+            config.update({
+                'vocab_size': 20,
+                'embed_dim': 512,
+                'observation_size': 10,
+                'hidden_size': 512,
+                'action_size': 6
+            })
+        
         torch.save({
             'state_dict': self.network.state_dict(),
-            'config': {
-                'network_type': self.network_type,
-                'observation_size': self.network.observation_size,
-                'hidden_size': self.network.hidden_size,
-                'action_size': 6,  # Fixed action size for maze
-                'use_auxiliary': self.use_auxiliary
-            }
+            'config': config
         }, path)
     
+
     @classmethod
     def load(cls, path: str, device: str = 'auto'):
         """Load agent from file"""
@@ -134,13 +148,21 @@ class Agent:
         # Get network type, default to 'lstm' for backward compatibility
         network_type = config.get('network_type', 'lstm')
         
+        # Get network parameters from config
+        vocab_size = config.get('vocab_size', 20)
+        embed_dim = config.get('embed_dim', 512)
+        observation_size = config.get('observation_size', 10)
+        hidden_size = config.get('hidden_size', 512)
+        action_size = config.get('action_size', 6)
+        use_auxiliary = config.get('use_auxiliary', False)
+        
         # Create agent
         agent = cls(
             network_type=network_type,
-            observation_size=config.get('observation_size', 10),
-            action_size=config.get('action_size', 6),
-            hidden_size=config.get('hidden_size', 512),
-            use_auxiliary=config.get('use_auxiliary', False),
+            observation_size=observation_size,
+            action_size=action_size,
+            hidden_size=hidden_size,
+            use_auxiliary=use_auxiliary,
             device=device
         )
         

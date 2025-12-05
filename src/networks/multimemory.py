@@ -228,7 +228,7 @@ class MultiMemoryPolicyNet(BaseNetwork):
         self.neural_cache.reset()
         self.write_buffer.clear()
     
-    def _get_config(self):
+    def get_config(self):
         """Get configuration for saving"""
         config = super()._get_config()
         config.update({

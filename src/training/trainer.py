@@ -291,6 +291,46 @@ class Trainer:
         
         # Pad sequences
         max_len = max(len(r) for r in rewards)
+
+
+        """
+        def pad_sequence(seq, max_len, pad_value=0, is_observation=False, dtype=np.int32):
+            padded = []
+            for s in seq:
+                pad_len = max_len - len(s)
+                if pad_len > 0:
+                    if is_observation:
+                        # For observations (nested lists)
+                        pad_shape = (pad_len,) + np.array(s[0]).shape
+                        padding = np.full(pad_shape, pad_value, dtype=dtype)
+                        padded_s = np.concatenate([np.array(s, dtype=dtype), padding], axis=0)
+                    else:
+                        # For actions, rewards, energies (flat lists)
+                        if dtype == np.int32:
+                            padding = [pad_value] * pad_len
+                        else:
+                            padding = [pad_value] * pad_len
+                        padded_s = np.array(s + padding, dtype=dtype)
+                else:
+                    padded_s = np.array(s, dtype=dtype)
+                padded.append(padded_s)
+            
+            return np.array(padded)
+        
+        # Pad sequences with correct data types
+        obs_padded = pad_sequence(observations, max_len, pad_value=0, is_observation=True, dtype=np.int32)
+        act_padded = pad_sequence(actions, max_len, pad_value=0, is_observation=False, dtype=np.int32)
+        rew_padded = pad_sequence(rewards, max_len, pad_value=0.0, is_observation=False, dtype=np.float32)
+        energy_padded = pad_sequence(energies, max_len, pad_value=0.0, is_observation=False, dtype=np.float32)
+        
+        return {
+            'observations': torch.tensor(obs_padded, dtype=torch.long).to(self.device),
+            'actions': torch.tensor(act_padded, dtype=torch.long).to(self.device),
+            'rewards': torch.tensor(rew_padded, dtype=torch.float32).to(self.device),
+            'energies': torch.tensor(energy_padded, dtype=torch.float32).to(self.device)
+        }
+        """
+
         
         def pad_sequence(seq, max_len, pad_value=0, is_observation=False):
             """Pad a list of sequences to the same length"""
@@ -327,7 +367,7 @@ class Trainer:
         }
     
     def _compute_loss(self, 
-                     experiences: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict]:
+                    experiences: Dict[str, torch.Tensor]) -> Tuple[torch.Tensor, Dict]:
         """Compute policy loss with auxiliary losses"""
         obs = experiences['observations']
         actions = experiences['actions']
@@ -353,9 +393,9 @@ class Trainer:
                 energy_pred = None
                 obs_pred = None
             
-            # Policy loss
+            # Policy loss - actions should be [B, T]
             policy_loss, entropy = self.policy_loss_fn(
-                logits, actions.unsqueeze(-1), rewards, mask
+                logits, actions, rewards, mask  # Remove the .unsqueeze(-1)
             )
             
             total_loss = policy_loss
@@ -381,7 +421,7 @@ class Trainer:
             # Standard forward pass without auxiliary tasks
             logits = self.agent.network(obs)
             policy_loss, entropy = self.policy_loss_fn(
-                logits, actions.unsqueeze(-1), rewards, mask
+                logits, actions, rewards, mask  # Remove the .unsqueeze(-1)
             )
             
             total_loss = policy_loss
@@ -441,7 +481,7 @@ class Trainer:
         save_dir = Path(self.config.get('save_dir', 'models'))
         save_dir.mkdir(exist_ok=True)
         
-        # Save agent
+        # Save agent - NO with torch.no_grad() here as agent.save handles it
         agent_path = save_dir / f"{self.experiment_name}_{name}.pt"
         self.agent.save(str(agent_path))
         

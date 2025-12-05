@@ -1,6 +1,6 @@
-# src/networks/lstm.py - FIXED VERSION
+# src/networks/lstm.py - FIXED TO MATCH ORIGINAL
 """
-LSTM-based policy network (Simplified to match original) - FIXED
+LSTM-based policy network (Simplified to match original)
 """
 
 import torch
@@ -10,7 +10,7 @@ from typing import Optional, Tuple
 
 
 class LSTMPolicyNet(nn.Module):
-    """LSTM-based policy network - Simplified version matching original"""
+    """LSTM-based policy network - Matching original MemoryPolicyNet structure"""
     
     def __init__(self,
                  vocab_size: int = 20,
@@ -23,8 +23,12 @@ class LSTMPolicyNet(nn.Module):
         
         super().__init__()
         
+        # Store configuration - matching original
         self.observation_size = observation_size
         self.vocab_size = vocab_size
+        self.embed_dim = embed_dim
+        self.hidden_size = hidden_size  # Store as attribute
+        self.action_size = action_size
         
         # Token embedding
         self.embedding = nn.Embedding(
@@ -108,3 +112,13 @@ class LSTMPolicyNet(nn.Module):
         logits = self.head(out)
         
         return logits
+    
+    def get_config(self):
+        """Get configuration for saving"""
+        return {
+            'vocab_size': self.vocab_size,
+            'embed_dim': self.embed_dim,
+            'observation_size': self.observation_size,
+            'hidden_size': self.hidden_size,
+            'action_size': self.action_size
+        }
